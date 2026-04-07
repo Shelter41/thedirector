@@ -286,3 +286,83 @@ async def slack_status():
 async def slack_disconnect():
     await execute("DELETE FROM credentials WHERE provider = 'slack'")
     return {"disconnected": True}
+
+
+# ─── Notion (token-based, not OAuth) ─────────────────────────────────────────
+#
+# Notion integrations use a static "Internal Integration Token" rather than
+# an OAuth flow. The user creates the integration at notion.so/my-integrations,
+# copies the token, and pastes it into the UI. We validate it by hitting
+# /users/me, then store it in the credentials table like the others.
+
+NOTION_API = "https://api.notion.com/v1"
+NOTION_VERSION = "2022-06-28"
+
+
+from pydantic import BaseModel
+
+
+class NotionConnectRequest(BaseModel):
+    token: str
+
+
+@router.post("/auth/notion")
+async def notion_connect(req: NotionConnectRequest):
+    token = (req.token or "").strip()
+    if not token:
+        return {"connected": False, "error": "token required"}
+
+    # Validate by hitting /users/me — this also tells us the bot's name
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"{NOTION_API}/users/me",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Notion-Version": NOTION_VERSION,
+                },
+            )
+        if resp.status_code != 200:
+            logger.warning("Notion token validation failed: %s %s", resp.status_code, resp.text[:200])
+            return {"connected": False, "error": f"Notion rejected the token (HTTP {resp.status_code})"}
+        user = resp.json()
+    except httpx.HTTPError as e:
+        logger.error("Notion validation failed: %s", e)
+        return {"connected": False, "error": f"validation failed: {e}"}
+
+    bot_name = (
+        user.get("name")
+        or (user.get("bot") or {}).get("workspace_name")
+        or "Notion"
+    )
+
+    token_data = {"token": token, "bot_name": bot_name}
+    await execute(
+        """INSERT INTO credentials (provider, data, updated_at)
+        VALUES ('notion', %s, now())
+        ON CONFLICT (provider) DO UPDATE SET data = %s, updated_at = now()""",
+        (json.dumps(token_data), json.dumps(token_data)),
+    )
+    logger.info("Notion connected (%s)", bot_name)
+    return {"connected": True, "bot_name": bot_name}
+
+
+@router.get("/auth/notion/status")
+async def notion_status():
+    row = await fetch_one(
+        "SELECT data, updated_at FROM credentials WHERE provider = 'notion'"
+    )
+    if not row:
+        return {"connected": False}
+    data = row["data"] if isinstance(row["data"], dict) else json.loads(row["data"])
+    return {
+        "connected": True,
+        "bot_name": data.get("bot_name"),
+        "connected_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+    }
+
+
+@router.delete("/auth/notion")
+async def notion_disconnect():
+    await execute("DELETE FROM credentials WHERE provider = 'notion'")
+    return {"disconnected": True}

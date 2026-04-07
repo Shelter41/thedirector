@@ -18,6 +18,15 @@ export const getSlackAuthUrl = () => fetchJSON('/auth/slack/url')
 export const getSlackStatus = () => fetchJSON('/auth/slack/status')
 export const disconnectSlack = () => fetchJSON('/auth/slack', { method: 'DELETE' })
 
+// Notion uses a static integration token, not OAuth
+export const getNotionStatus = () => fetchJSON('/auth/notion/status')
+export const connectNotion = (token: string) =>
+  fetchJSON('/auth/notion', {
+    method: 'POST',
+    body: JSON.stringify({ token }),
+  })
+export const disconnectNotion = () => fetchJSON('/auth/notion', { method: 'DELETE' })
+
 // Ingest
 export const triggerIngest = (source: string, days: number) =>
   fetchJSON('/ingest', {

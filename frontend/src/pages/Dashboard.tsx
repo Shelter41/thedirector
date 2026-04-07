@@ -4,6 +4,7 @@ import { useSearchParams } from 'react-router-dom'
 import {
   getGmailStatus, getGmailAuthUrl, disconnectGmail,
   getSlackStatus, getSlackAuthUrl, disconnectSlack,
+  getNotionStatus, connectNotion, disconnectNotion,
   getStatus, triggerIngest,
 } from '../lib/api'
 import ConnectionCard from '../components/ConnectionCard'
@@ -79,6 +80,18 @@ export default function Dashboard() {
             getAuthUrl={getSlackAuthUrl}
             disconnect={disconnectSlack}
           />
+          <ConnectionCard
+            name="Notion"
+            provider="notion"
+            mode="token"
+            getStatus={getNotionStatus}
+            connectWithToken={connectNotion}
+            disconnect={disconnectNotion}
+            tokenHelpUrl="https://www.notion.so/my-integrations"
+            tokenHelpText={
+              "Create an Internal Integration in Notion, copy its token, then share each page or database you want to ingest with the integration (page → Add connections)."
+            }
+          />
         </div>
       </div>
 
@@ -86,7 +99,7 @@ export default function Dashboard() {
       <div style={sectionStyle}>
         <div style={headerStyle}>Ingest</div>
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '1rem' }}>
-          {['all', 'gmail', 'slack'].map(source => (
+          {['all', 'gmail', 'slack', 'notion'].map(source => (
             <div key={source} style={{ display: 'flex', gap: '0.25rem' }}>
               {timeRanges.map(({ label, days }) => (
                 <button

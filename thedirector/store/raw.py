@@ -13,10 +13,19 @@ def _msg_path(data_root: str, msg: Message) -> Path:
     return Path(data_root) / "raw" / msg.source / month / f"{msg.source_id}.json"
 
 
-def write(data_root: str, msg: Message) -> Path | None:
+def write(data_root: str, msg: Message, overwrite: bool = False) -> Path | None:
+    """Write a raw message to disk.
+
+    For immutable sources (Gmail, Slack), pass overwrite=False (the default):
+    if the file already exists, the new write is skipped and None is returned.
+
+    For mutable sources (Notion pages, which can be edited), pass overwrite=True:
+    the file is rewritten and `ingested_at` updates so the wiki cursor will
+    re-process the page on the next loop run.
+    """
     path = _msg_path(data_root, msg)
-    if path.exists():
-        return None  # already stored
+    if path.exists() and not overwrite:
+        return None  # already stored, dedup
 
     path.parent.mkdir(parents=True, exist_ok=True)
     envelope = {

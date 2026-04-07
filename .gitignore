@@ -10,6 +10,9 @@ data/
 **/data/knowledgebase/
 **/data/chats/
 
+# ── Internal planning notes (not part of the public docs) ────────────
+docs/plans/
+
 # ── Python ──────────────────────────────────────────────────────────
 .venv/
 venv/

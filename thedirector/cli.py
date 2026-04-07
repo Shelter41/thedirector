@@ -31,7 +31,7 @@ def init(data_root: str | None):
 
 
 @cli.command()
-@click.option("--source", type=click.Choice(["gmail", "slack", "all"]), default="all")
+@click.option("--source", type=click.Choice(["gmail", "slack", "notion", "all"]), default="all")
 @click.option("--days", default=30, help="Number of days to fetch")
 def ingest(source: str, days: int):
     """Fetch messages and run the wiki loop."""
@@ -43,8 +43,11 @@ async def _ingest(source: str, days: int):
     from .connectors.db import init_pool, close_pool
     from .connectors.gmail import GmailConnector
     from .connectors.slack import SlackConnector
+    from .connectors.notion import NotionConnector
     from .store import raw as raw_store
     from .wiki import loop as wiki_loop
+
+    MUTABLE_SOURCES = {"notion"}
 
     await init_pool()
     data_root = settings.data_root
@@ -96,6 +99,23 @@ async def _ingest(source: str, days: int):
             else:
                 click.echo("Slack not connected, skipping")
 
+        if source in ("notion", "all"):
+            notion = NotionConnector()
+            if await notion.is_connected():
+                click.echo("Fetching Notion...")
+                last_sync = raw_store.get_sync_cursor(data_root, "notion")
+                fetch_started = datetime.now(timezone.utc)
+                msgs = await notion.fetch(
+                    since_days=days,
+                    last_sync=last_sync,
+                    on_progress=cli_progress,
+                )
+                raw_store.set_sync_cursor(data_root, "notion", fetch_started)
+                click.echo(f"  Got {len(msgs)} pages")
+                messages.extend(msgs)
+            else:
+                click.echo("Notion not connected, skipping")
+
         if not messages:
             click.echo("No messages to process")
             return
@@ -103,7 +123,8 @@ async def _ingest(source: str, days: int):
         # Write to raw
         new_count = 0
         for msg in messages:
-            if raw_store.write(data_root, msg):
+            overwrite = msg.source in MUTABLE_SOURCES
+            if raw_store.write(data_root, msg, overwrite=overwrite):
                 new_count += 1
 
         click.echo(f"Stored {new_count} new messages ({len(messages)} total fetched)")

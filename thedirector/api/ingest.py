@@ -8,9 +8,14 @@ from pydantic import BaseModel
 from ..config import settings
 from ..connectors.gmail import GmailConnector
 from ..connectors.slack import SlackConnector
+from ..connectors.notion import NotionConnector
 from ..store import raw as raw_store
 from ..wiki import loop as wiki_loop
 from .activity import broadcast
+
+# Sources whose items are mutable (page edits, etc.) — re-fetching should
+# overwrite the existing raw file rather than dedup-skip.
+MUTABLE_SOURCES = {"notion"}
 
 logger = logging.getLogger("thedirector.api.ingest")
 
@@ -20,7 +25,7 @@ _running_jobs: dict[str, str] = {}
 
 
 class IngestRequest(BaseModel):
-    source: str = "all"  # "gmail", "slack", "all"
+    source: str = "all"  # "gmail", "slack", "notion", "all"
     days: int = 30
 
 
@@ -95,6 +100,25 @@ async def _run_ingest(job_id: str, source: str, days: int):
                     "count": len(slack_msgs),
                 })
 
+        if source in ("notion", "all"):
+            notion = NotionConnector()
+            if await notion.is_connected():
+                await broadcast("ingest_progress", {"phase": "fetching", "source": "notion"})
+                last_sync = raw_store.get_sync_cursor(data_root, "notion")
+                fetch_started = datetime.now(timezone.utc)
+                notion_msgs = await notion.fetch(
+                    since_days=days,
+                    last_sync=last_sync,
+                    on_progress=fetch_progress,
+                )
+                raw_store.set_sync_cursor(data_root, "notion", fetch_started)
+                messages.extend(notion_msgs)
+                await broadcast("ingest_progress", {
+                    "phase": "fetched",
+                    "source": "notion",
+                    "count": len(notion_msgs),
+                })
+
         if not messages:
             _running_jobs[job_id] = "complete"
             await broadcast("ingest_complete", {"total": 0, "new": 0})
@@ -107,7 +131,8 @@ async def _run_ingest(job_id: str, source: str, days: int):
 
         new_count = 0
         for msg in messages:
-            path = raw_store.write(data_root, msg)
+            overwrite = msg.source in MUTABLE_SOURCES
+            path = raw_store.write(data_root, msg, overwrite=overwrite)
             if path:
                 new_count += 1
 

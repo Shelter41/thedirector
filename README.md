@@ -1,11 +1,14 @@
 <!-- HEADER:START -->
 <p align="center">
+  <img src="docs/images/thedirector.png" alt="The Director" width="640" />
+</p>
+<p align="center">
   <h1 align="center">The Director</h1>
 </p>
 <!-- HEADER:END -->
 
 <p align="center">
-  <strong>The Director is a personal knowledge layer that builds and curates a markdown wiki from your email and Slack — automatically.</strong><br/>
+  <strong>The Director is a personal knowledge layer that builds and curates a markdown wiki from your email, Slack, and Notion — automatically.</strong><br/>
   Persistent, file-based, and fully local. No vector DB. No graph DB. Just markdown an LLM maintains for you.
 </p>
 
@@ -41,7 +44,7 @@
 
 **🧠 LLM-curated knowledge base:** the wiki is markdown the LLM writes, organizes, and maintains itself — no fixed schemas, no manual tagging.
 
-**📥 Drop-in connectors:** Gmail and Slack out of the box, with OAuth flows and incremental sync. Add a new source in ~150 lines.
+**📥 Drop-in connectors:** Gmail, Slack, and Notion out of the box. OAuth flows for Gmail and Slack, integration token for Notion. Incremental sync for all three. Add a new source in ~150 lines.
 
 **💸 Cost-tuned by default:** Haiku for triage and writes, Sonnet only for chat synthesis. Per-page source filtering and incremental index updates keep ingestion cheap.
 
@@ -56,7 +59,7 @@
 
 The Director is a knowledge management system that follows [Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f). Instead of dumping your data into a vector database or graph database for retrieval, an LLM reads your raw sources and **maintains a persistent markdown wiki** that compounds knowledge over time.
 
-You connect Gmail and/or Slack. The Director fetches messages, stores them as immutable JSON in `data/raw/`, and triggers a triage loop. The LLM decides which wiki pages to create or update, then writes them to `data/knowledgebase/`. The LLM picks its own organization — it might use `people/`, `topics/`, `projects/`, or anything else that fits the content.
+You connect Gmail, Slack, and/or Notion. The Director fetches messages and pages, stores them as JSON in `data/raw/`, and triggers a triage loop. The LLM decides which wiki pages to create or update, then writes them to `data/knowledgebase/`. The LLM picks its own organization — it might use `people/`, `topics/`, `projects/`, or anything else that fits the content.
 
 Then you talk to the Director — a chat agent that has tools (`list_files`, `read_file`, `bash`) and explores the wiki itself to answer your questions.
 
@@ -101,22 +104,23 @@ React SPA (Vite)                    CLI (click)
      ▼                                  │
 FastAPI backend ◄───────────────────────┘
      │
-┌────┼────────────┬───────────┬────────────┐
-▼    ▼            ▼           ▼            ▼
-api  connectors   store       wiki        prompts
-├─ oauth   ├─ gmail   ├─ raw     ├─ loop      ├─ triage.md
-├─ ingest  ├─ slack   ├─ wiki    ├─ agent     ├─ create_page.md
-├─ status  └─ base    └─ chats   ├─ tools     ├─ update_page.md
-├─ wiki                          ├─ query     ├─ index.md
-├─ chat                          └─ lint      ├─ query.md
-├─ chats                                      └─ chat.md
+┌────┼─────────────┬───────────┬────────────┐
+▼    ▼             ▼           ▼            ▼
+api  connectors    store       wiki        prompts
+├─ oauth   ├─ gmail    ├─ raw     ├─ loop     ├─ triage.md
+├─ ingest  ├─ slack    ├─ wiki    ├─ agent    ├─ create_page.md
+├─ status  ├─ notion   ├─ chats   ├─ dream    ├─ update_page.md
+├─ wiki    └─ base     └─ dreams  ├─ tools    ├─ index.md
+├─ chat                           ├─ query    ├─ query.md
+├─ chats                          └─ lint     ├─ chat.md
+├─ dream                                      └─ dream.md
 └─ activity
      │
      ▼
-Postgres (OAuth credentials only)
+Postgres (OAuth credentials + Notion token)
 ```
 
-The wiki construction (raw fetch → triage → page writes) runs on Haiku. The chat agent loop runs on Sonnet with tools.
+The wiki construction (raw fetch → triage → page writes) runs on Haiku. The chat and dream agent loops use tool-use, with Sonnet for chat synthesis.
 
 
 ## Installation
@@ -127,8 +131,9 @@ The wiki construction (raw fetch → triage → page writes) runs on Haiku. The 
 -   **Node.js 20+** (for the frontend)
 -   **Docker + Docker Compose** (for Postgres)
 -   **An Anthropic API key** ([console.anthropic.com](https://console.anthropic.com))
--   **Google OAuth credentials** for Gmail ([console.cloud.google.com](https://console.cloud.google.com))
+-   **Google OAuth credentials** for Gmail (optional, [console.cloud.google.com](https://console.cloud.google.com))
 -   **Slack OAuth credentials** (optional, [api.slack.com/apps](https://api.slack.com/apps))
+-   **Notion integration token** (optional, [notion.so/my-integrations](https://www.notion.so/my-integrations)) — pasted into the UI, no env var needed
 
 
 ### Install
@@ -167,11 +172,11 @@ FRONTEND_URL=http://localhost:5173
 
 DATABASE_URL=postgresql://thedirector:thedirector_dev@localhost:5433/thedirector
 
-# Google OAuth (Gmail)
+# Google OAuth (Gmail) — optional
 GOOGLE_CLIENT_ID=
 GOOGLE_CLIENT_SECRET=
 
-# Slack OAuth (optional)
+# Slack OAuth — optional
 SLACK_CLIENT_ID=
 SLACK_CLIENT_SECRET=
 
@@ -179,7 +184,9 @@ SLACK_CLIENT_SECRET=
 ANTHROPIC_API_KEY=
 ```
 
-Make sure your Google OAuth client has `http://localhost:8000/auth/gmail/callback` listed as an authorized redirect URI.
+**Notion** doesn't need any env variable — you paste the integration token into the UI when you click Connect.
+
+Make sure your Google OAuth client has `http://localhost:8000/auth/gmail/callback` listed as an authorized redirect URI. Same for Slack if you're using it: `http://localhost:8000/auth/slack/callback`.
 
 
 ## Quick Start
@@ -200,8 +207,11 @@ npm run dev
 
 Open [http://localhost:5173](http://localhost:5173). On the **Dashboard**:
 
-1. Click **Connect Gmail**, complete the OAuth flow
-2. Click **gmail 7d** to ingest the last 7 days of email
+1. Connect a source:
+   - **Gmail**: click *Connect*, complete the OAuth flow
+   - **Slack**: click *Connect*, complete the OAuth flow, then `/invite @TheDirector` to the channels you want indexed
+   - **Notion**: click *Connect*, paste your integration token, then share each page or database with the integration in Notion (page → ⋯ → *Add connections*)
+2. Click an ingest button (e.g. **gmail 7d**, **notion 30d**, or **all 7d**)
 3. Watch the **Activity** feed: fetch progress → raw store → triage → page writes
 4. Open the **Wiki** tab to browse the pages the Director just created
 5. Open the **Chat** tab and ask: *"What's in the wiki?"*
@@ -220,6 +230,7 @@ thedirector init
 # Fetch and process messages
 thedirector ingest --source gmail --days 7
 thedirector ingest --source slack --days 30
+thedirector ingest --source notion --days 30
 thedirector ingest --source all --days 7
 
 # Ask a one-shot question
@@ -269,19 +280,20 @@ Conversation history shows up in a sidebar inside the Chat page. Click any past 
 The full pipeline in detail:
 
 ```
-User clicks "Ingest gmail 7d"
+User clicks "Ingest gmail 7d" (or slack, or notion, or all)
        │
        ▼
 FastAPI POST /ingest spawns a background task
        │
        ▼
-GmailConnector.fetch()
-       │  reads OAuth tokens from Postgres
-       │  fetches message IDs since last_sync (cursor file on disk)
-       │  skips IDs already on disk (cheap dedup)
+{Source}Connector.fetch(since_days, last_sync, ...)
+       │  reads credentials from Postgres
+       │  fetches new items since last_sync (cursor file on disk)
+       │  Gmail: skips IDs already on disk (cheap dedup)
+       │  Notion: re-fetches edited pages (mutable source)
        │  parses + normalizes to Message dataclass
        ▼
-raw_store.write()  →  data/raw/gmail/2026-04/{id}.json
+raw_store.write(..., overwrite=mutable)  →  data/raw/{source}/2026-04/{id}.json
        │
        ▼
 wiki/loop.py: run()
@@ -347,28 +359,40 @@ Everything The Director knows about you lives in one folder:
 
 ```
 data/
-├── raw/                              # Immutable ingested messages
+├── raw/                              # Ingested source items
 │   ├── .cursor                       # Last successful wiki loop run
 │   ├── gmail/
 │   │   ├── .last_sync                # Per-source incremental sync cursor
 │   │   └── 2026-04/
 │   │       ├── 19c0929d4c840a90.json
 │   │       └── ...
-│   └── slack/
+│   ├── slack/
+│   │   ├── .last_sync
+│   │   └── 2026-04/
+│   │       └── 1712345678.123456.json
+│   └── notion/                       # Mutable — files are overwritten on edit
 │       ├── .last_sync
 │       └── 2026-04/
-│           └── 1712345678.123456.json
+│           └── 1f8a3c9d-...-page-id.json
 │
 ├── knowledgebase/                    # The LLM-curated wiki
 │   ├── index.md                      # Auto-generated index
 │   ├── log.md                        # Append-only ingestion log
 │   └── ... (LLM-chosen structure)
 │
-└── chats/                            # Persisted conversations
-    └── {thread_id}/
+├── chats/                            # Persisted conversations
+│   └── {thread_id}/
+│       ├── meta.json
+│       └── turns.jsonl
+│
+└── dreams/                           # Persisted wiki health-check sessions
+    └── {dream_id}/
         ├── meta.json
-        └── turns.jsonl
+        ├── events.jsonl
+        └── report.md
 ```
+
+**Note on mutability:** Gmail and Slack messages are immutable — once stored, they never change. Notion pages are *mutable*: when you edit a page in Notion, the next ingest overwrites the corresponding raw file and bumps `ingested_at` so the wiki loop re-processes the page on the next run.
 
 Delete `data/raw/gmail/` and the next ingest re-fetches everything. Delete `data/knowledgebase/` and the next ingest rebuilds the wiki from scratch. Delete `data/chats/` and your conversation history is gone.
 
@@ -435,7 +459,7 @@ thedirector/
 │   ├── config.py               # Pydantic settings
 │   ├── main.py                 # FastAPI app
 │   ├── api/                    # HTTP routes (oauth, ingest, chat, ...)
-│   ├── connectors/             # Gmail + Slack fetchers
+│   ├── connectors/             # Gmail, Slack, Notion fetchers
 │   ├── store/                  # raw, wiki, chats
 │   ├── wiki/                   # loop, agent, tools, prompts loader
 │   ├── llm/                    # Anthropic client + retry
