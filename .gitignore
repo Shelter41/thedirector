@@ -1,0 +1,44 @@
+# ── Secrets ─────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── User data (raw messages, wiki, chat history) ────────────────────
+data/
+/data
+**/data/raw/
+**/data/knowledgebase/
+**/data/chats/
+
+# ── Python ──────────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ── Node / frontend ────────────────────────────────────────────────
+node_modules/
+frontend/dist/
+frontend/.vite/
+
+# ── Editor / OS ────────────────────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# ── Local logs ─────────────────────────────────────────────────────
+*.log
+logs/
