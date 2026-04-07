@@ -3,6 +3,7 @@ import Dashboard from './pages/Dashboard'
 import Wiki from './pages/Wiki'
 import Query from './pages/Query'
 import Chat from './pages/Chat'
+import Dream from './pages/Dream'
 
 const navStyle = {
   display: 'flex',
@@ -35,6 +36,7 @@ export default function App() {
         <NavLink to="/" style={linkStyle} end>Dashboard</NavLink>
         <NavLink to="/wiki" style={linkStyle}>Wiki</NavLink>
         <NavLink to="/chat" style={linkStyle}>Chat</NavLink>
+        <NavLink to="/dream" style={linkStyle}>Dream</NavLink>
         <NavLink to="/query" style={linkStyle}>Query</NavLink>
       </nav>
       <main style={{ padding: '2rem', maxWidth: 1200, margin: '0 auto' }}>
@@ -43,6 +45,7 @@ export default function App() {
           <Route path="/wiki" element={<Wiki />} />
           <Route path="/wiki/*" element={<Wiki />} />
           <Route path="/chat" element={<Chat />} />
+          <Route path="/dream" element={<Dream />} />
           <Route path="/query" element={<Query />} />
         </Routes>
       </main>

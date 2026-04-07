@@ -16,6 +16,7 @@ from .api.wiki import router as wiki_router
 from .api.query import router as query_router
 from .api.chat import router as chat_router
 from .api.chats import router as chats_router
+from .api.dream import router as dream_router
 from .api.activity import router as activity_router
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -49,4 +50,5 @@ app.include_router(wiki_router)
 app.include_router(query_router)
 app.include_router(chat_router)
 app.include_router(chats_router)
+app.include_router(dream_router)
 app.include_router(activity_router)

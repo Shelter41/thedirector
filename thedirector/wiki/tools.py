@@ -17,6 +17,7 @@ logger = logging.getLogger("thedirector.wiki.tools")
 
 # ── JSON schemas (Anthropic tool-use format) ────────────────────────────────
 
+# Tools the chat agent uses (read-only)
 TOOLS_SCHEMA = [
     {
         "name": "list_files",
@@ -68,6 +69,95 @@ TOOLS_SCHEMA = [
                 },
             },
             "required": ["command"],
+        },
+    },
+]
+
+
+# Additional tools the dream agent gets — write access plus chat-log inspection
+# plus an explicit `dream_done` finish tool.
+DREAM_TOOLS_SCHEMA = TOOLS_SCHEMA + [
+    {
+        "name": "write_file",
+        "description": (
+            "Create or overwrite a wiki page. Path is relative to the wiki root. "
+            "Counts against your write budget. Use sparingly — only when there's "
+            "a real issue to fix or a real concept to add."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Page path relative to the wiki root, e.g. 'people/alice-chen.md'.",
+                },
+                "content": {
+                    "type": "string",
+                    "description": "Full markdown content for the page.",
+                },
+            },
+            "required": ["path", "content"],
+        },
+    },
+    {
+        "name": "delete_file",
+        "description": (
+            "Delete a wiki page. Counts against your write budget. Use only for "
+            "true orphans (no inbound links) or pages that have been merged elsewhere."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "Page path relative to the wiki root.",
+                },
+            },
+            "required": ["path"],
+        },
+    },
+    {
+        "name": "list_chats",
+        "description": (
+            "List all past chat threads between the user and the Director. "
+            "Returns id, title, turn count, and timestamps. Use this to find "
+            "conversations worth reviewing for wiki gaps."
+        ),
+        "input_schema": {"type": "object", "properties": {}},
+    },
+    {
+        "name": "read_chat",
+        "description": (
+            "Read the full event log of a chat thread by id. Returns user "
+            "messages, tool calls, and assistant answers in chronological order."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "thread_id": {
+                    "type": "string",
+                    "description": "Thread id from list_chats.",
+                },
+            },
+            "required": ["thread_id"],
+        },
+    },
+    {
+        "name": "dream_done",
+        "description": (
+            "Signal the end of the dream pass. Call this when you're finished "
+            "(or when budget is nearly exhausted). Pass a markdown summary of "
+            "what you found, what you changed, and what you suggest investigating next."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "summary": {
+                    "type": "string",
+                    "description": "Markdown summary of the dream pass.",
+                },
+            },
+            "required": ["summary"],
         },
     },
 ]
@@ -177,15 +267,99 @@ async def bash(kb_root: Path, command: str, timeout: float = 10.0) -> dict:
     }
 
 
+# ── Dream-only tool implementations ─────────────────────────────────────────
+
+async def write_file(kb_root: Path, path: str, content: str) -> dict:
+    if not path:
+        raise ToolError("path is required")
+    if content is None:
+        raise ToolError("content is required")
+    target = _safe_path(kb_root, path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    existed = target.exists()
+    target.write_text(content)
+    return {
+        "path": path,
+        "action": "overwrote" if existed else "created",
+        "bytes": len(content),
+    }
+
+
+async def delete_file(kb_root: Path, path: str) -> dict:
+    if not path:
+        raise ToolError("path is required")
+    target = _safe_path(kb_root, path)
+    if not target.exists():
+        raise ToolError(f"file not found: {path}")
+    if target.is_dir():
+        raise ToolError(f"refusing to delete a directory: {path}")
+    target.unlink()
+    return {"path": path, "action": "deleted"}
+
+
+async def list_chats_tool(data_root: str) -> dict:
+    """List chat threads. Imported lazily to avoid circular imports."""
+    from ..store import chats as chats_store
+    threads = chats_store.list_threads(data_root)
+    return {
+        "threads": [
+            {
+                "id": t["id"],
+                "title": t.get("title", ""),
+                "turn_count": t.get("turn_count", 0),
+                "updated_at": t.get("updated_at", ""),
+            }
+            for t in threads
+        ]
+    }
+
+
+async def read_chat_tool(data_root: str, thread_id: str) -> dict:
+    from ..store import chats as chats_store
+    if not thread_id:
+        raise ToolError("thread_id is required")
+    meta = chats_store.get_meta(data_root, thread_id)
+    if meta is None:
+        raise ToolError(f"thread not found: {thread_id}")
+    events = chats_store.read_events(data_root, thread_id)
+    return {"meta": meta, "events": events}
+
+
 # ── Dispatch ────────────────────────────────────────────────────────────────
 
 async def dispatch(kb_root: Path, name: str, tool_input: dict) -> dict:
-    """Run a tool by name. Returns the tool's structured output dict on
-    success. Raises ToolError on bad input. Other exceptions bubble up."""
+    """Chat-agent dispatch. Read-only tools only."""
     if name == "list_files":
         return await list_files(kb_root, tool_input.get("path", ""))
     if name == "read_file":
         return await read_file(kb_root, tool_input.get("path", ""))
     if name == "bash":
         return await bash(kb_root, tool_input.get("command", ""))
+    raise ToolError(f"unknown tool: {name}")
+
+
+async def dispatch_dream(
+    kb_root: Path,
+    data_root: str,
+    name: str,
+    tool_input: dict,
+) -> dict:
+    """Dream-agent dispatch. Read tools + write tools + chat inspection.
+
+    The `dream_done` tool is NOT dispatched here — the dream loop intercepts it
+    before reaching dispatch (it's a signal, not an executable tool)."""
+    if name in ("list_files", "read_file", "bash"):
+        return await dispatch(kb_root, name, tool_input)
+    if name == "write_file":
+        return await write_file(
+            kb_root,
+            tool_input.get("path", ""),
+            tool_input.get("content", ""),
+        )
+    if name == "delete_file":
+        return await delete_file(kb_root, tool_input.get("path", ""))
+    if name == "list_chats":
+        return await list_chats_tool(data_root)
+    if name == "read_chat":
+        return await read_chat_tool(data_root, tool_input.get("thread_id", ""))
     raise ToolError(f"unknown tool: {name}")

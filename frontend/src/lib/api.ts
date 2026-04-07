@@ -120,6 +120,78 @@ export const getChatThread = (id: string): Promise<{ meta: ChatThreadMeta; event
 export const deleteChatThread = (id: string) =>
   fetchJSON(`/chats/${id}`, { method: 'DELETE' })
 
+// Dream — streaming agent events
+export type DreamEvent =
+  | { type: 'dream_start'; dream_id: string; max_ops: number; max_writes: number; started_at: string }
+  | { type: 'budget'; ops_used: number; ops_total: number; writes_used: number; writes_total: number }
+  | { type: 'tool_call'; id: string; name: string; input: Record<string, any> }
+  | { type: 'tool_result'; id: string; ok: boolean; preview?: string; error?: string }
+  | { type: 'delta'; text: string }
+  | { type: 'dream_done'; summary: string }
+  | { type: 'error'; message: string }
+  | { type: 'done' }
+
+export async function* streamDream(
+  maxOps: number,
+  maxWrites: number,
+): AsyncGenerator<DreamEvent, void, unknown> {
+  const res = await fetch('/dream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ max_ops: maxOps, max_writes: maxWrites }),
+  })
+
+  if (!res.ok || !res.body) {
+    throw new Error(`dream failed: ${res.status} ${res.statusText}`)
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    buffer += decoder.decode(value, { stream: true })
+
+    const frames = buffer.split('\n\n')
+    buffer = frames.pop() || ''
+
+    for (const frame of frames) {
+      const line = frame.trim()
+      if (!line.startsWith('data:')) continue
+      const payload = line.slice(5).trim()
+      if (!payload) continue
+      try {
+        const obj = JSON.parse(payload) as DreamEvent
+        yield obj
+        if (obj.type === 'done') return
+      } catch {
+        // ignore parse errors on partial frames
+      }
+    }
+  }
+}
+
+export interface DreamMeta {
+  id: string
+  started_at: string
+  ended_at: string | null
+  status: 'running' | 'complete' | 'incomplete' | 'error'
+  max_ops: number
+  max_writes: number
+  ops_used: number
+  writes_used: number
+}
+
+export const listDreams = (): Promise<{ dreams: DreamMeta[] }> => fetchJSON('/dreams')
+
+export const getDream = (id: string): Promise<{ meta: DreamMeta; events: any[]; report: string | null }> =>
+  fetchJSON(`/dreams/${id}`)
+
+export const deleteDream = (id: string) =>
+  fetchJSON(`/dreams/${id}`, { method: 'DELETE' })
+
 // SSE
 export function createActivityStream(): EventSource {
   return new EventSource(`${BASE}/activity/stream`)

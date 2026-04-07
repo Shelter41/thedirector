@@ -13,6 +13,8 @@ export default defineConfig({
       '/query': 'http://localhost:8000',
       '/chat': 'http://localhost:8000',
       '/chats': 'http://localhost:8000',
+      '/dream': 'http://localhost:8000',
+      '/dreams': 'http://localhost:8000',
       '/activity': 'http://localhost:8000',
     },
   },

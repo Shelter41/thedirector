@@ -49,6 +49,10 @@ def chat_system() -> str:
     return load("chat")
 
 
+def dream_system() -> str:
+    return load("dream")
+
+
 # JSON schema for the triage tool — stays in code since it's structured data,
 # not natural-language prompt content.
 TRIAGE_TOOL_SCHEMA = {
