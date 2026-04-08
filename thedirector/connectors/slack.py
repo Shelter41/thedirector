@@ -1,11 +1,11 @@
-import json
 import logging
 from datetime import datetime, timedelta, timezone
 
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
-from .db import fetch_one
+from ..config import settings
+from ..store import credentials as creds_store
 from .message import Message
 
 logger = logging.getLogger("thedirector.slack")
@@ -15,12 +15,9 @@ class SlackConnector:
     provider = "slack"
 
     async def _load_token(self) -> str | None:
-        row = await fetch_one(
-            "SELECT data FROM credentials WHERE provider = 'slack'"
-        )
-        if not row:
+        data = creds_store.get(settings.data_root, "slack")
+        if not data:
             return None
-        data = json.loads(row["data"]) if isinstance(row["data"], str) else row["data"]
         return data.get("access_token")
 
     def _resolve_user(self, client: WebClient, user_id: str, cache: dict) -> str:

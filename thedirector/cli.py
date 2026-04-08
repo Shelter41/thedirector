@@ -30,6 +30,95 @@ def init(data_root: str | None):
     click.echo(f"  knowledgebase/ — LLM-generated wiki")
 
 
+@cli.command(name="migrate-creds")
+def migrate_creds():
+    """One-shot: copy OAuth credentials out of Postgres into data/credentials.json.
+
+    Run this once before tearing down Postgres. Reads using the same
+    DATABASE_URL the rest of the app used to use. Skips short-lived
+    *_oauth_state rows since those have no value across the migration.
+    """
+    asyncio.run(_migrate_creds())
+
+
+async def _migrate_creds():
+    """Connect to a (legacy) Postgres `credentials` table and copy each row
+    into the new file-backed store. psycopg is imported lazily so a fresh
+    install without it can still ship the rest of the CLI.
+    """
+    import json as _json
+    import os
+
+    try:
+        import psycopg
+        from psycopg.rows import dict_row
+    except ImportError:
+        click.echo(
+            "psycopg is not installed. Install it temporarily to run the migration:",
+            err=True,
+        )
+        click.echo("  pip install 'psycopg[binary]>=3.2.0'", err=True)
+        raise SystemExit(1)
+
+    from .store import credentials as creds_store
+
+    data_root = settings.data_root
+
+    # The legacy DATABASE_URL is no longer in our settings — read it from the
+    # raw env or fall back to the historical default.
+    db_url = os.environ.get(
+        "DATABASE_URL",
+        "postgresql://thedirector:thedirector_dev@localhost:5433/thedirector",
+    )
+    click.echo(f"Reading from {db_url}")
+
+    try:
+        async with await psycopg.AsyncConnection.connect(db_url, row_factory=dict_row) as conn:
+            async with conn.cursor() as cur:
+                await cur.execute(
+                    "SELECT provider, data, updated_at FROM credentials ORDER BY provider"
+                )
+                rows = await cur.fetchall()
+    except Exception as e:
+        click.echo(f"Failed to connect to or read from Postgres: {e}", err=True)
+        click.echo("Is your Postgres container running? `docker compose up -d`", err=True)
+        raise SystemExit(1)
+
+    migrated: list[str] = []
+    skipped: list[str] = []
+
+    for row in rows:
+        provider = row["provider"]
+        if provider.endswith("_oauth_state"):
+            skipped.append(provider)
+            continue
+
+        data = row["data"]
+        if isinstance(data, str):
+            data = _json.loads(data)
+
+        try:
+            creds_store.set(data_root, provider, data)
+            migrated.append(provider)
+        except Exception as e:
+            click.echo(f"  ! failed to write {provider}: {e}", err=True)
+
+    if migrated:
+        click.echo(f"Migrated {len(migrated)} provider(s): {', '.join(migrated)}")
+        click.echo(f"Wrote: {creds_store.credentials_path(data_root)}")
+        click.echo("File mode: 0600 (owner read/write only)")
+    else:
+        click.echo("No credentials found to migrate.")
+
+    if skipped:
+        click.echo(f"Skipped {len(skipped)} short-lived OAuth state row(s): {', '.join(skipped)}")
+
+    click.echo("\nNext steps:")
+    click.echo("  1. Inspect the file:  cat data/credentials.json | jq")
+    click.echo("  2. Pull the code commit that switches the call sites to the file store")
+    click.echo("  3. Tear down Postgres:  docker compose down -v")
+
+
 @cli.command()
 @click.option("--source", type=click.Choice(["gmail", "slack", "notion", "all"]), default="all")
 @click.option("--days", default=30, help="Number of days to fetch")
@@ -40,7 +129,6 @@ def ingest(source: str, days: int):
 
 async def _ingest(source: str, days: int):
     from datetime import datetime, timezone
-    from .connectors.db import init_pool, close_pool
     from .connectors.gmail import GmailConnector
     from .connectors.slack import SlackConnector
     from .connectors.notion import NotionConnector
@@ -49,7 +137,6 @@ async def _ingest(source: str, days: int):
 
     MUTABLE_SOURCES = {"notion"}
 
-    await init_pool()
     data_root = settings.data_root
 
     try:
@@ -143,9 +230,9 @@ async def _ingest(source: str, days: int):
                 click.echo(f"  Done: {data['created']} created, {data['updated']} updated")
 
         await wiki_loop.run(data_root, on_progress=on_progress)
-
-    finally:
-        await close_pool()
+    except Exception as e:
+        click.echo(f"Ingest failed: {e}", err=True)
+        raise
 
 
 @cli.command()

@@ -1,5 +1,4 @@
 import base64
-import json
 import logging
 from datetime import datetime, timedelta, timezone
 
@@ -8,7 +7,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
 from ..config import settings
-from .db import fetch_one, execute
+from ..store import credentials as creds_store
 from .message import Message
 
 logger = logging.getLogger("thedirector.gmail")
@@ -18,13 +17,10 @@ class GmailConnector:
     provider = "gmail"
 
     async def _get_credentials(self) -> Credentials | None:
-        row = await fetch_one(
-            "SELECT data FROM credentials WHERE provider = 'gmail'"
-        )
-        if not row:
+        data = creds_store.get(settings.data_root, "gmail")
+        if not data:
             return None
 
-        data = json.loads(row["data"]) if isinstance(row["data"], str) else row["data"]
         creds = Credentials(
             token=data.get("token"),
             refresh_token=data.get("refresh_token"),
@@ -46,11 +42,7 @@ class GmailConnector:
                     "scopes": list(creds.scopes) if creds.scopes else [],
                     "expiry": creds.expiry.isoformat() if creds.expiry else None,
                 }
-                await execute(
-                    """UPDATE credentials SET data = %s, updated_at = now()
-                    WHERE provider = 'gmail'""",
-                    (json.dumps(token_data),),
-                )
+                creds_store.set(settings.data_root, "gmail", token_data)
             except Exception as e:
                 logger.error("Failed to refresh Gmail token: %s", e)
                 return None

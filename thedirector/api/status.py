@@ -3,7 +3,7 @@ import logging
 from fastapi import APIRouter
 
 from ..config import settings
-from ..connectors.db import fetch_one
+from ..store import credentials as creds_store
 from ..store import raw as raw_store
 from ..store import wiki as wiki_store
 
@@ -16,12 +16,9 @@ router = APIRouter()
 async def get_status():
     data_root = settings.data_root
 
-    gmail_row = await fetch_one(
-        "SELECT updated_at FROM credentials WHERE provider = 'gmail'"
-    )
-    slack_row = await fetch_one(
-        "SELECT updated_at FROM credentials WHERE provider = 'slack'"
-    )
+    gmail_data = creds_store.get(data_root, "gmail")
+    slack_data = creds_store.get(data_root, "slack")
+    notion_data = creds_store.get(data_root, "notion")
 
     pages = wiki_store.page_count(data_root)
     raw_count = raw_store.count(data_root)
@@ -31,9 +28,11 @@ async def get_status():
     # raw/{source}/ deletes the cursor and forces a full re-fetch.
     gmail_cursor = raw_store.get_sync_cursor(data_root, "gmail")
     slack_cursor = raw_store.get_sync_cursor(data_root, "slack")
+    notion_cursor = raw_store.get_sync_cursor(data_root, "notion")
     gmail_last_fetch = gmail_cursor.isoformat() if gmail_cursor else None
     slack_last_fetch = slack_cursor.isoformat() if slack_cursor else None
-    last_fetch_candidates = [t for t in (gmail_last_fetch, slack_last_fetch) if t]
+    notion_last_fetch = notion_cursor.isoformat() if notion_cursor else None
+    last_fetch_candidates = [t for t in (gmail_last_fetch, slack_last_fetch, notion_last_fetch) if t]
     last_raw_fetch = max(last_fetch_candidates) if last_fetch_candidates else None
 
     log_content = wiki_store.read_log(data_root)
@@ -42,14 +41,19 @@ async def get_status():
     return {
         "connections": {
             "gmail": {
-                "connected": gmail_row is not None,
-                "connected_at": gmail_row["updated_at"].isoformat() if gmail_row else None,
+                "connected": gmail_data is not None,
+                "connected_at": creds_store.get_updated_at(data_root, "gmail"),
                 "last_fetch": gmail_last_fetch,
             },
             "slack": {
-                "connected": slack_row is not None,
-                "connected_at": slack_row["updated_at"].isoformat() if slack_row else None,
+                "connected": slack_data is not None,
+                "connected_at": creds_store.get_updated_at(data_root, "slack"),
                 "last_fetch": slack_last_fetch,
+            },
+            "notion": {
+                "connected": notion_data is not None,
+                "connected_at": creds_store.get_updated_at(data_root, "notion"),
+                "last_fetch": notion_last_fetch,
             },
         },
         "wiki": {

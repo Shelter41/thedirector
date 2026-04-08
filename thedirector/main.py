@@ -6,7 +6,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
-from .connectors.db import init_pool, close_pool
 from .store.wiki import init_knowledgebase
 
 from .api.oauth import router as oauth_router
@@ -24,13 +23,11 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    await init_pool()
     # Ensure data directories exist
     Path(settings.data_root).mkdir(parents=True, exist_ok=True)
     (Path(settings.data_root) / "raw").mkdir(exist_ok=True)
     init_knowledgebase(settings.data_root)
     yield
-    await close_pool()
 
 
 app = FastAPI(title="The Director", version="0.1.0", lifespan=lifespan)

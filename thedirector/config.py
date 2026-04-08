@@ -8,9 +8,6 @@ _ENV_FILE = _PROJECT_ROOT / ".env"
 
 
 class Settings(BaseSettings):
-    # Postgres
-    database_url: str = "postgresql://thedirector:thedirector_dev@localhost:5433/thedirector"
-
     # Google OAuth (for Gmail)
     google_client_id: str = ""
     google_client_secret: str = ""
@@ -43,10 +40,20 @@ class Settings(BaseSettings):
     # Storage (override in .env with DATA_ROOT=./data or any absolute path)
     data_root: str = "./data"
 
+    # Optional Fernet key for encrypting data/credentials.json at rest.
+    # If empty, the file is plain JSON with mode 0600 (still secure for a
+    # single-user local app — same threat model as ~/.ssh/id_rsa).
+    # Generate with: python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'
+    master_key: str = ""
+
     # Wiki loop
     batch_size: int = 15
 
-    model_config = {"env_file": str(_ENV_FILE), "env_file_encoding": "utf-8"}
+    model_config = {
+        "env_file": str(_ENV_FILE),
+        "env_file_encoding": "utf-8",
+        "extra": "ignore",  # don't choke on legacy keys (e.g. DATABASE_URL)
+    }
 
 
 settings = Settings()

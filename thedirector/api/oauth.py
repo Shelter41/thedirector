@@ -1,4 +1,9 @@
-import json
+"""OAuth + token-connect endpoints for Gmail, Slack, Notion.
+
+All credential persistence goes through the file-backed store at
+`{data_root}/credentials.json` (long-lived tokens) and
+`{data_root}/oauth_state.json` (short-lived flow state with TTL).
+"""
 import logging
 import hashlib
 import base64
@@ -8,15 +13,18 @@ from urllib.parse import urlencode
 import httpx
 from fastapi import APIRouter, Request
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 
 from google_auth_oauthlib.flow import Flow
 
 from ..config import settings
-from ..connectors.db import execute, fetch_one
+from ..store import credentials as creds_store
+from ..store import oauth_state as state_store
 
 logger = logging.getLogger("thedirector.oauth")
 
 router = APIRouter()
+
 
 # ─── Gmail OAuth ─────────────────────────────────────────────────────────────
 
@@ -60,25 +68,20 @@ async def gmail_auth_url(request: Request):
         code_challenge_method="S256",
     )
 
-    oauth_state = {"state": state, "code_verifier": code_verifier}
-    await execute(
-        """INSERT INTO credentials (provider, data, updated_at)
-        VALUES ('gmail_oauth_state', %s, now())
-        ON CONFLICT (provider) DO UPDATE SET data = %s, updated_at = now()""",
-        (json.dumps(oauth_state), json.dumps(oauth_state)),
+    state_store.set_state(
+        settings.data_root,
+        "gmail",
+        {"state": state, "code_verifier": code_verifier},
     )
     return {"auth_url": auth_url}
 
 
 @router.get("/auth/gmail/callback", name="gmail_callback")
 async def gmail_callback(code: str, state: str):
-    row = await fetch_one(
-        "SELECT data FROM credentials WHERE provider = 'gmail_oauth_state'"
-    )
-    if not row:
+    stored = state_store.get_state(settings.data_root, "gmail")
+    if not stored:
         return RedirectResponse(f"{settings.frontend_url}?gmail=error&reason=invalid_state")
 
-    stored = row["data"] if isinstance(row["data"], dict) else json.loads(row["data"])
     if stored.get("state") != state:
         return RedirectResponse(f"{settings.frontend_url}?gmail=error&reason=state_mismatch")
 
@@ -102,12 +105,8 @@ async def gmail_callback(code: str, state: str):
         "expiry": creds.expiry.isoformat() if creds.expiry else None,
     }
 
-    await execute(
-        """INSERT INTO credentials (provider, data, updated_at)
-        VALUES ('gmail', %s, now())
-        ON CONFLICT (provider) DO UPDATE SET data = %s, updated_at = now()""",
-        (json.dumps(token_data), json.dumps(token_data)),
-    )
+    creds_store.set(settings.data_root, "gmail", token_data)
+    state_store.delete_state(settings.data_root, "gmail")
 
     logger.info("Gmail connected")
     return RedirectResponse(f"{settings.frontend_url}?gmail=connected")
@@ -115,13 +114,9 @@ async def gmail_callback(code: str, state: str):
 
 @router.get("/auth/gmail/status")
 async def gmail_status():
-    row = await fetch_one(
-        "SELECT data, updated_at FROM credentials WHERE provider = 'gmail'"
-    )
-    if not row:
+    data = creds_store.get(settings.data_root, "gmail")
+    if not data:
         return {"connected": False}
-
-    data = row["data"] if isinstance(row["data"], dict) else json.loads(row["data"])
 
     needs_reconnect = False
     if data.get("refresh_token"):
@@ -148,11 +143,7 @@ async def gmail_status():
                     "scopes": list(creds.scopes) if creds.scopes else [],
                     "expiry": creds.expiry.isoformat() if creds.expiry else None,
                 }
-                await execute(
-                    """UPDATE credentials SET data = %s, updated_at = now()
-                    WHERE provider = 'gmail'""",
-                    (json.dumps(refreshed),),
-                )
+                creds_store.set(settings.data_root, "gmail", refreshed)
         except Exception:
             needs_reconnect = True
     else:
@@ -161,13 +152,13 @@ async def gmail_status():
     return {
         "connected": True,
         "needs_reconnect": needs_reconnect,
-        "connected_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+        "connected_at": creds_store.get_updated_at(settings.data_root, "gmail"),
     }
 
 
 @router.delete("/auth/gmail")
 async def gmail_disconnect():
-    await execute("DELETE FROM credentials WHERE provider = 'gmail'")
+    creds_store.delete(settings.data_root, "gmail")
     return {"disconnected": True}
 
 
@@ -191,13 +182,7 @@ SLACK_SCOPES = [
 @router.get("/auth/slack/url")
 async def slack_auth_url(request: Request):
     state = secrets.token_urlsafe(32)
-    state_data = {"state": state}
-    await execute(
-        """INSERT INTO credentials (provider, data, updated_at)
-        VALUES ('slack_oauth_state', %s, now())
-        ON CONFLICT (provider) DO UPDATE SET data = %s, updated_at = now()""",
-        (json.dumps(state_data), json.dumps(state_data)),
-    )
+    state_store.set_state(settings.data_root, "slack", {"state": state})
 
     redirect_uri = f"{settings.backend_url}/auth/slack/callback"
     params = {
@@ -212,13 +197,10 @@ async def slack_auth_url(request: Request):
 
 @router.get("/auth/slack/callback", name="slack_callback")
 async def slack_callback(code: str, state: str = ""):
-    row = await fetch_one(
-        "SELECT data FROM credentials WHERE provider = 'slack_oauth_state'"
-    )
-    if not row:
+    stored = state_store.get_state(settings.data_root, "slack")
+    if not stored:
         return RedirectResponse(f"{settings.frontend_url}?slack=error&reason=invalid_state")
 
-    stored = row["data"] if isinstance(row["data"], dict) else json.loads(row["data"])
     if stored.get("state") != state:
         return RedirectResponse(f"{settings.frontend_url}?slack=error&reason=state_mismatch")
 
@@ -255,12 +237,8 @@ async def slack_callback(code: str, state: str = ""):
         "bot_user_id": data.get("bot_user_id"),
     }
 
-    await execute(
-        """INSERT INTO credentials (provider, data, updated_at)
-        VALUES ('slack', %s, now())
-        ON CONFLICT (provider) DO UPDATE SET data = %s, updated_at = now()""",
-        (json.dumps(token_data), json.dumps(token_data)),
-    )
+    creds_store.set(settings.data_root, "slack", token_data)
+    state_store.delete_state(settings.data_root, "slack")
 
     logger.info("Slack connected (team: %s)", token_data.get("team_name"))
     return RedirectResponse(f"{settings.frontend_url}?slack=connected")
@@ -268,23 +246,19 @@ async def slack_callback(code: str, state: str = ""):
 
 @router.get("/auth/slack/status")
 async def slack_status():
-    row = await fetch_one(
-        "SELECT data, updated_at FROM credentials WHERE provider = 'slack'"
-    )
-    if not row:
+    data = creds_store.get(settings.data_root, "slack")
+    if not data:
         return {"connected": False}
-
-    data = row["data"] if isinstance(row["data"], dict) else json.loads(row["data"])
     return {
         "connected": True,
         "team_name": data.get("team_name"),
-        "connected_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+        "connected_at": creds_store.get_updated_at(settings.data_root, "slack"),
     }
 
 
 @router.delete("/auth/slack")
 async def slack_disconnect():
-    await execute("DELETE FROM credentials WHERE provider = 'slack'")
+    creds_store.delete(settings.data_root, "slack")
     return {"disconnected": True}
 
 
@@ -293,13 +267,10 @@ async def slack_disconnect():
 # Notion integrations use a static "Internal Integration Token" rather than
 # an OAuth flow. The user creates the integration at notion.so/my-integrations,
 # copies the token, and pastes it into the UI. We validate it by hitting
-# /users/me, then store it in the credentials table like the others.
+# /users/me, then store it in the credentials file.
 
 NOTION_API = "https://api.notion.com/v1"
 NOTION_VERSION = "2022-06-28"
-
-
-from pydantic import BaseModel
 
 
 class NotionConnectRequest(BaseModel):
@@ -336,33 +307,24 @@ async def notion_connect(req: NotionConnectRequest):
         or "Notion"
     )
 
-    token_data = {"token": token, "bot_name": bot_name}
-    await execute(
-        """INSERT INTO credentials (provider, data, updated_at)
-        VALUES ('notion', %s, now())
-        ON CONFLICT (provider) DO UPDATE SET data = %s, updated_at = now()""",
-        (json.dumps(token_data), json.dumps(token_data)),
-    )
+    creds_store.set(settings.data_root, "notion", {"token": token, "bot_name": bot_name})
     logger.info("Notion connected (%s)", bot_name)
     return {"connected": True, "bot_name": bot_name}
 
 
 @router.get("/auth/notion/status")
 async def notion_status():
-    row = await fetch_one(
-        "SELECT data, updated_at FROM credentials WHERE provider = 'notion'"
-    )
-    if not row:
+    data = creds_store.get(settings.data_root, "notion")
+    if not data:
         return {"connected": False}
-    data = row["data"] if isinstance(row["data"], dict) else json.loads(row["data"])
     return {
         "connected": True,
         "bot_name": data.get("bot_name"),
-        "connected_at": row["updated_at"].isoformat() if row.get("updated_at") else None,
+        "connected_at": creds_store.get_updated_at(settings.data_root, "notion"),
     }
 
 
 @router.delete("/auth/notion")
 async def notion_disconnect():
-    await execute("DELETE FROM credentials WHERE provider = 'notion'")
+    creds_store.delete(settings.data_root, "notion")
     return {"disconnected": True}

@@ -28,9 +28,6 @@ jiter==0.13.0
 oauthlib==3.3.1
 proto-plus==1.27.2
 protobuf==7.34.1
-psycopg==3.3.3
-psycopg-binary==3.3.3
-psycopg-pool==3.3.0
 pyasn1==0.6.3
 pyasn1_modules==0.4.2
 pycparser==3.0

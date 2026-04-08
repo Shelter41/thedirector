@@ -117,7 +117,7 @@ api  connectors    store       wiki        prompts
 └─ activity
      │
      ▼
-Postgres (OAuth credentials + Notion token)
+data/credentials.json (mode 0600, optional Fernet encryption)
 ```
 
 The wiki construction (raw fetch → triage → page writes) runs on Haiku. The chat and dream agent loops use tool-use, with Sonnet for chat synthesis.
@@ -129,7 +129,6 @@ The wiki construction (raw fetch → triage → page writes) runs on Haiku. The 
 
 -   **Python 3.12+**
 -   **Node.js 20+** (for the frontend)
--   **Docker + Docker Compose** (for Postgres)
 -   **An Anthropic API key** ([console.anthropic.com](https://console.anthropic.com))
 -   **Google OAuth credentials** for Gmail (optional, [console.cloud.google.com](https://console.cloud.google.com))
 -   **Slack OAuth credentials** (optional, [api.slack.com/apps](https://api.slack.com/apps))
@@ -157,20 +156,12 @@ npm install
 cd ..
 ```
 
-Start Postgres:
-
-```bash
-docker compose up -d
-```
-
 Configure environment variables — copy `.env.example` to `.env` (or create one) and fill in:
 
 ```dotenv
 DATA_ROOT=./data
 BACKEND_URL=http://localhost:8000
 FRONTEND_URL=http://localhost:5173
-
-DATABASE_URL=postgresql://thedirector:thedirector_dev@localhost:5433/thedirector
 
 # Google OAuth (Gmail) — optional
 GOOGLE_CLIENT_ID=
@@ -182,6 +173,9 @@ SLACK_CLIENT_SECRET=
 
 # Anthropic
 ANTHROPIC_API_KEY=
+
+# Optional: encrypt data/credentials.json at rest
+# MASTER_KEY=
 ```
 
 **Notion** doesn't need any env variable — you paste the integration token into the UI when you click Connect.
@@ -287,7 +281,7 @@ FastAPI POST /ingest spawns a background task
        │
        ▼
 {Source}Connector.fetch(since_days, last_sync, ...)
-       │  reads credentials from Postgres
+       │  reads credentials from data/credentials.json (mode 0600)
        │  fetches new items since last_sync (cursor file on disk)
        │  Gmail: skips IDs already on disk (cheap dedup)
        │  Notion: re-fetches edited pages (mutable source)
@@ -385,16 +379,21 @@ data/
 │       ├── meta.json
 │       └── turns.jsonl
 │
-└── dreams/                           # Persisted wiki health-check sessions
-    └── {dream_id}/
-        ├── meta.json
-        ├── events.jsonl
-        └── report.md
+├── dreams/                           # Persisted wiki health-check sessions
+│   └── {dream_id}/
+│       ├── meta.json
+│       ├── events.jsonl
+│       └── report.md
+│
+├── credentials.json                  # OAuth tokens, mode 0600
+└── oauth_state.json                  # Short-lived flow state, mode 0600
 ```
 
 **Note on mutability:** Gmail and Slack messages are immutable — once stored, they never change. Notion pages are *mutable*: when you edit a page in Notion, the next ingest overwrites the corresponding raw file and bumps `ingested_at` so the wiki loop re-processes the page on the next run.
 
-Delete `data/raw/gmail/` and the next ingest re-fetches everything. Delete `data/knowledgebase/` and the next ingest rebuilds the wiki from scratch. Delete `data/chats/` and your conversation history is gone.
+**Credentials are file-based** (no database). `data/credentials.json` is mode `0600` and gitignored. Set `MASTER_KEY` in `.env` to encrypt it at rest with Fernet.
+
+Delete `data/raw/gmail/` and the next ingest re-fetches everything. Delete `data/knowledgebase/` and the next ingest rebuilds the wiki from scratch. Delete `data/chats/` and your conversation history is gone. Delete `data/credentials.json` and you'll need to reconnect each source.
 
 
 ## Configuration
@@ -406,7 +405,7 @@ All settings are read from `.env`. Defaults are sensible — you only need to se
 | `DATA_ROOT`            | `./data`                      | Where everything is stored.                       |
 | `BACKEND_URL`          | `http://localhost:8000`       | Used in OAuth redirect URIs.                      |
 | `FRONTEND_URL`         | `http://localhost:5173`       | CORS origin + post-OAuth redirect target.         |
-| `DATABASE_URL`         | `postgresql://...localhost:5433/thedirector` | Postgres connection (OAuth tokens only). |
+| `MASTER_KEY`           | _empty_                       | Optional Fernet key. If set, encrypts `data/credentials.json` at rest. |
 | `ANTHROPIC_API_KEY`    | _required_                    | Your Claude API key.                              |
 | `GOOGLE_CLIENT_ID`     | _required for Gmail_          | Google OAuth client ID.                           |
 | `GOOGLE_CLIENT_SECRET` | _required for Gmail_          | Google OAuth client secret.                       |
@@ -449,8 +448,6 @@ pytest
 ```
 thedirector/
 ├── pyproject.toml
-├── docker-compose.yml          # Postgres only
-├── schema.sql                  # credentials + sync_log tables
 ├── requirements.txt
 ├── .env                        # Your secrets, not committed
 │
@@ -460,7 +457,7 @@ thedirector/
 │   ├── main.py                 # FastAPI app
 │   ├── api/                    # HTTP routes (oauth, ingest, chat, ...)
 │   ├── connectors/             # Gmail, Slack, Notion fetchers
-│   ├── store/                  # raw, wiki, chats
+│   ├── store/                  # raw, wiki, chats, dreams, credentials
 │   ├── wiki/                   # loop, agent, tools, prompts loader
 │   ├── llm/                    # Anthropic client + retry
 │   └── prompts/                # The .md prompt files

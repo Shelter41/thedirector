@@ -9,13 +9,13 @@ Notion pages are mutable — unlike Gmail/Slack messages. The orchestrator passe
 overwrite=True to raw_store.write so re-syncing an edited page replaces the
 existing raw file and bumps `ingested_at`, which re-triggers the wiki loop.
 """
-import json
 import logging
 from datetime import datetime, timedelta, timezone
 
 import httpx
 
-from .db import fetch_one
+from ..config import settings
+from ..store import credentials as creds_store
 from .message import Message
 
 logger = logging.getLogger("thedirector.notion")
@@ -28,12 +28,9 @@ class NotionConnector:
     provider = "notion"
 
     async def _load_token(self) -> str | None:
-        row = await fetch_one(
-            "SELECT data FROM credentials WHERE provider = 'notion'"
-        )
-        if not row:
+        data = creds_store.get(settings.data_root, "notion")
+        if not data:
             return None
-        data = json.loads(row["data"]) if isinstance(row["data"], str) else row["data"]
         return data.get("token")
 
     def _headers(self, token: str) -> dict:
